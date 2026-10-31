@@ -10,3 +10,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+
+# Datasets generados
+# Parquets reproducibles con los scripts del proyecto (no se versionan)
+data/raw/*.parquet
+data/processed/*.parquet
