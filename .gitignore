@@ -1,0 +1,12 @@
+# Archivos generados por Python
+__pycache__/
+*.py[oc]
+*.egg-info/
+
+# Entornos virtuales
+.venv/
+
+# Caches de herramientas de calidad
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
