@@ -1,183 +1,97 @@
-"""Normalización del esquema de CardSim.
+"""Schema normalization for raw CardSim simulation output.
 
-Este módulo transforma las columnas crudas que devuelve CardSim
-(payer_id, payee_id, fraud, etc.) a un esquema canónico con nombres
-del dominio de pagos y tipos correctos (enums, booleanos, timestamps).
-
-El mismo módulo se reutiliza tanto en el probe (500 tarjetas) como
-en la simulación completa (17.500 tarjetas).
+Transforms raw CardSim columns (``payer_id``, ``payee_id``, ``fraud``, etc.)
+into the canonical payment-domain schema with explicit string enums, booleans,
+and deterministic transaction identifiers.
 """
 
-# Importamos pandas: es la librería que usamos para manipular el DataFrame
 import pandas as pd
 
+CARD_TYPE_MAP: dict[int, str] = {1: "credit", 0: "debit"}
+CHANNEL_MAP: dict[int, str] = {1: "remote", 0: "in_person"}
 
-# Diccionario que traduce los valores 0/1 de CardSim a texto legible.
-# 1 significa "crédito" y 0 significa "débito".
-CARD_TYPE_MAP = {1: "credit", 0: "debit"}
+DROP_COLUMNS: list[str] = [
+    "run_id",
+    "day_index",
+    "date",
+    "time_seconds",
+    "hour",
+    "credit_card",
+    "remote",
+]
 
-# Diccionario que traduce los valores 0/1 de CardSim a texto legible.
-# 1 significa "remoto" (compra online) y 0 significa "presencial" (POS físico).
-CHANNEL_MAP = {1: "remote", 0: "in_person"}
-
-# Lista de columnas de CardSim que NO vamos a conservar en el esquema final,
-# porque son redundantes o internas del simulador.
-COLUMNAS_A_ELIMINAR = ["run_id", "day_index", "date", "time_seconds", "hour"]
+CANONICAL_COLUMNS: list[str] = [
+    "transaction_id",
+    "card_id",
+    "merchant_id",
+    "transaction_timestamp",
+    "amount",
+    "card_type",
+    "channel",
+    "merchant_distance_km",
+    "is_fraud",
+    "campaign_id",
+    "status",
+]
 
 
 def normalize_cardsim_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Renombra y transforma las columnas de CardSim al esquema canónico.
+    """Map raw CardSim output to the canonical 11-column payment schema.
 
-    Parámetros
+    Parameters
     ----------
     df : pd.DataFrame
-        Salida cruda de ``Cardsim.simulate()`` (13 columnas).
+        Raw output returned by ``Cardsim.simulate()`` (13 columns).
 
-    Devuelve
-    --------
+    Returns
+    -------
     pd.DataFrame
-        DataFrame con 11 columnas, en este orden:
+        Normalized DataFrame with 11 canonical columns:
 
-        - **transaction_id** (str):
-          Identificador único de la transacción con formato
-          ``TX-YYYYMMDD-NNNNNNN``. Se genera ordenando cronológicamente
-          y numerando dentro de cada día.
-
-        - **card_id** (int):
-          Identificador de la tarjeta que origina la transacción.
-          Proviene de ``payer_id`` en CardSim.
-
-        - **merchant_id** (int):
-          Identificador del comercio receptor.
-          Proviene de ``payee_id`` en CardSim.
-
-        - **transaction_timestamp** (datetime64[ns]):
-          Fecha y hora exacta del evento.
-          Proviene de ``date_time`` en CardSim.
-
-        - **amount** (float):
-          Importe de la transacción generado por CardSim (lognormal
-          calibrada con datos de pagos). Sin moneda asignada.
-          Proviene de ``amount`` en CardSim.
-
-        - **card_type** (str):
-          Tipo de tarjeta: ``'credit'`` o ``'debit'``.
-          Derivado del flag ``credit_card`` (1 → credit, 0 → debit).
-
-        - **channel** (str):
-          Canal de la transacción: ``'remote'`` (online) o
-          ``'in_person'`` (POS físico).
-          Derivado del flag ``remote`` (1 → remote, 0 → in_person).
-
-        - **merchant_distance_km** (float):
-          Distancia euclídea entre la ubicación de la tarjeta y la del
-          comercio. CardSim trabaja en un grid abstracto; la escala se
-          interpreta como kilómetros.
-          Proviene de ``distance`` en CardSim.
-
-        - **is_fraud** (bool):
-          Etiqueta de fraude: ``True`` si la transacción es fraudulenta,
-          ``False`` si es legítima.
-          Proviene de ``fraud`` (0/1) en CardSim.
-
-        - **campaign_id** (object, nulo):
-          Identificador de la campaña de fraude (Card Testing o Bust-Out).
-          Se deja en ``pd.NA`` y se poblará en la fase de inyección de
-          campañas. Las transacciones legítimas permanecen nulas.
-
-        - **status** (str):
-          Estado de la transacción. Por ahora ``'approved'`` para todas;
-          en fases posteriores podrá tomar ``'denied'`` o ``'reversed'``.
+        - ``transaction_id`` (str): Deterministic ID (``TX-YYYYMMDD-NNNNNNN``)
+          assigned by daily chronological sequence.
+        - ``card_id`` (int): Originating card identifier (from ``payer_id``).
+        - ``merchant_id`` (int): Receiving merchant identifier (from ``payee_id``).
+        - ``transaction_timestamp`` (datetime64[us]): Event timestamp (from ``date_time``).
+        - ``amount`` (float): Currency-agnostic transaction amount (lognormal DCPC fit).
+        - ``card_type`` (str): ``"credit"`` or ``"debit"``.
+        - ``channel`` (str): ``"remote"`` (online) or ``"in_person"`` (physical POS).
+        - ``merchant_distance_km`` (float): Euclidean distance on CardSim's abstract grid,
+          interpreted in kilometers.
+        - ``is_fraud`` (bool): Fraud label (``True`` if fraudulent).
+        - ``campaign_id`` (object): Reserved for synthetic fraud campaign injection
+          (``pd.NA`` for baseline traffic).
+        - ``status`` (str): Transaction authorization status (``"approved"`` in baseline;
+          extended with ``"denied"`` / ``"reversed"`` in later stages).
     """
-    # Hacemos una copia para no modificar el DataFrame original 
-    salida = df.copy()
+    out = df.copy()
 
-    # -------------------------------------------------------------------
-    # PASO 1: Renombrar las columnas de CardSim al vocabulario del dominio
-    # -------------------------------------------------------------------
-    salida = salida.rename(
+    out = out.rename(
         columns={
-            "payer_id": "card_id",                    # identificador de tarjeta
-            "payee_id": "merchant_id",                # identificador de comercio
-            "date_time": "transaction_timestamp",     # fecha y hora del evento
-            "distance": "merchant_distance_km",       # distancia tarjeta↔comercio
-            "fraud": "is_fraud",                      # etiqueta de fraude (boolean)
-            # 'amount' se queda igual: no se renombra
+            "payer_id": "card_id",
+            "payee_id": "merchant_id",
+            "date_time": "transaction_timestamp",
+            "distance": "merchant_distance_km",
+            "fraud": "is_fraud",
         }
     )
 
-    # -------------------------------------------------------------------
-    # PASO 2: Convertir los flags 0/1 en enums de texto legibles
-    # -------------------------------------------------------------------
-    # .map() recorre cada valor y lo sustituye según el diccionario.
-    # 1 → 'credit', 0 → 'debit'
-    salida["card_type"] = salida["credit_card"].map(CARD_TYPE_MAP)
+    out["card_type"] = out["credit_card"].map(CARD_TYPE_MAP)
+    out["channel"] = out["remote"].map(CHANNEL_MAP)
+    out["is_fraud"] = out["is_fraud"].astype(bool)
 
-    # 1 → 'remote', 0 → 'in_person'
-    salida["channel"] = salida["remote"].map(CHANNEL_MAP)
+    # Sort chronologically before ID generation to guarantee deterministic IDs per seed.
+    out = out.sort_values("transaction_timestamp").reset_index(drop=True)
 
-    # -------------------------------------------------------------------
-    # PASO 3: Convertir la etiqueta de fraude a booleano real
-    # -------------------------------------------------------------------
-    # .astype(bool) transforma 1 → True y 0 → False (más legible que int)
-    salida["is_fraud"] = salida["is_fraud"].astype(bool)
-
-    # -------------------------------------------------------------------
-    # PASO 4: Ordenar cronológicamente para que transaction_id sea determinista
-    # -------------------------------------------------------------------
-    # Si no ordenamos, cada ejecución con la misma seed generaría IDs distintos
-    salida = salida.sort_values("transaction_timestamp").reset_index(drop=True)
-
-    # -------------------------------------------------------------------
-    # PASO 5: Añadir un identificador de transacción único y legible
-    # -------------------------------------------------------------------
-    # Extraemos la parte de fecha en formato YYYYMMDD de cada timestamp
-    fecha = salida["transaction_timestamp"].dt.strftime("%Y%m%d")
-
-    # Numeramos las transacciones dentro de cada día (1, 2, 3, ...)
-    # .cumcount() empieza en 0, por eso sumamos 1
-    secuencia = salida.groupby(fecha).cumcount() + 1
-
-    # Concatenamos: "TX-" + fecha + "-" + secuencia con 7 ceros a la izquierda
-    # Resultado: 'TX-20240101-0000001'
-    salida["transaction_id"] = (
-        "TX-" + fecha + "-" + secuencia.astype(str).str.zfill(7)
+    date_str = out["transaction_timestamp"].dt.strftime("%Y%m%d")
+    daily_seq = out.groupby(date_str).cumcount() + 1
+    out["transaction_id"] = (
+        "TX-" + date_str + "-" + daily_seq.astype(str).str.zfill(7)
     )
 
-    # -------------------------------------------------------------------
-    # PASO 6: Añadir columnas reservadas para la inyección de campañas
-    # -------------------------------------------------------------------
-    # campaign_id: se rellenará más adelante con el ID de la campaña
-    # (Card Testing o Bust-Out). De momento, NA (nulo).
-    salida["campaign_id"] = pd.NA
+    # Reserved fields populated during downstream fraud-campaign injection.
+    out["campaign_id"] = pd.NA
+    out["status"] = "approved"
 
-    # status: por ahora todas las transacciones son 'approved'.
-    # En la fase de campañas se podrá poblar con 'denied'/'reversed'.
-    salida["status"] = "approved"
-
-    # -------------------------------------------------------------------
-    # PASO 7: Eliminar columnas redundantes o ya transformadas
-    # -------------------------------------------------------------------
-    # Eliminamos las columnas de CardSim que no usamos + las originales
-    # credit_card y remote, ya convertidas a card_type y channel.
-    salida = salida.drop(columns=COLUMNAS_A_ELIMINAR + ["credit_card", "remote"])
-
-    # -------------------------------------------------------------------
-    # PASO 8: Reordenar las columnas en el orden canónico final
-    # -------------------------------------------------------------------
-    orden_final = [
-        "transaction_id",           # identificador único
-        "card_id",                  # tarjeta
-        "merchant_id",              # comercio
-        "transaction_timestamp",    # cuándo ocurrió
-        "amount",                   # importe
-        "card_type",                # crédito o débito
-        "channel",                  # remoto o presencial
-        "merchant_distance_km",     # distancia
-        "is_fraud",                 # etiqueta
-        "campaign_id",              # campaña (a poblar)
-        "status",                   # estado
-    ]
-
-    # Devolvemos solo esas columnas, en ese orden
-    return salida[orden_final]
+    out = out.drop(columns=DROP_COLUMNS)
+    return out[CANONICAL_COLUMNS]

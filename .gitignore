@@ -1,17 +1,19 @@
-# Archivos generados por Python
+# Python artifacts
 __pycache__/
 *.py[oc]
 *.egg-info/
 
-# Entornos virtuales
+# Virtual environments
 .venv/
 
-# Caches de herramientas de calidad
+# Quality & test caches
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 
-# Datasets generados
-# Parquets reproducibles con los scripts del proyecto (no se versionan)
+# Generated datasets (reproducible via project scripts)
 data/raw/*.parquet
 data/processed/*.parquet
+
+# Jupyter notebooks
+.ipynb_checkpoints/

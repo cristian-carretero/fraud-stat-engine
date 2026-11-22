@@ -1,31 +1,39 @@
 # fraud-stat-engine
 
-Motor fundacional de datos y estadística para detección de fraude
-transaccional. Reconstruye desde cero los fundamentos matemáticos y 
-computacionales de un sistema de detección de fraude.
+Foundational synthetic data and statistical engine for transactional fraud
+detection. Rebuilds the mathematical and computational foundations of a payment
+fraud system from first principles.
 
-## Estado actual
+## Current State
 
-- Entorno Python 3.12 reproducible con `uv` (lockfile determinista).
-- **CardSim** (Reserva Federal) instalado como simulador base de tráfico.
-- **Probe validado**: 500 tarjetas x 30 días -> 14.583 transacciones con
-  tasa de fraude 1.0012%.
-- **Módulo de normalización** (`src/fraud_stat_engine/schema.py`) que
-  transforma el esquema crudo de CardSim al vocabulario del dominio de
-  pagos (11 columnas canónicas).
+- Reproducible Python 3.12 environment managed with `uv` (deterministic lockfile).
+- **CardSim** (Federal Reserve DCPC-calibrated simulator) configured with local
+  calibration data for baseline payment traffic generation.
+- **Validated calibration probe**: 500 cards x 30 days (~14,583 transactions,
+  ~1.00% fraud rate, 0.972 tx/card/day).
+- **Canonical schema normalization** (`src/fraud_stat_engine/schema.py`): maps
+  raw CardSim output to an 11-column payment-domain schema.
+- **Baseline dataset builder** (`scripts/build_dataset.py`): generates 17,500
+  cards x 12 days (4,000 merchants) and persists `data/raw/cardsim_base.parquet`
+  with integrity assertions.
+- **Baseline EDA notebook** (`notebooks/01_eda_cardsim_base.ipynb`): initial
+  schema audit and exploratory analysis setup.
 
-## Estructura
+## Project Structure
 
-```
+```text
 fraud-stat-engine/
+├── notebooks/
+│   └── 01_eda_cardsim_base.ipynb   # Baseline dataset EDA
 ├── scripts/
-│   ├── explore_cardsim.py      # Probe: 500 tarjetas x 30 días
-│   └── normalize_cardsim.py    # Probe + normalización
+│   ├── probe_cardsim.py            # Calibration probe (500 cards x 30 days)
+│   └── build_dataset.py            # Full baseline generation -> Parquet
 ├── src/
 │   └── fraud_stat_engine/
 │       ├── __init__.py
-│       ├── py.typed            # Marca el paquete como tipado (PEP 561)
-│       └── schema.py           # Normalización del esquema de CardSim
+│       ├── py.typed                # PEP 561 typed package marker
+│       └── schema.py               # Canonical CardSim schema normalization
+├── .gitignore
 ├── pyproject.toml
 ├── README.md
 └── uv.lock
@@ -38,23 +46,24 @@ uv sync
 uv run python --version
 ```
 
-## Uso
+## Usage
 
-Ejecutar el probe de CardSim:
+Run the CardSim calibration probe:
 
 ```bash
-uv run python scripts/explore_cardsim.py
+uv run python scripts/probe_cardsim.py
 ```
 
-Ejecutar el probe con normalización de esquema:
+Build and persist the normalized baseline dataset (`data/raw/cardsim_base.parquet`):
 
 ```bash
-uv run python scripts/normalize_cardsim.py
+uv run python scripts/build_dataset.py
 ```
 
 ## Stack
 
 - Python 3.12
-- `numpy`, `pandas`, `scipy`, `statsmodels`
+- `numpy`, `pandas`, `scipy`, `statsmodels`, `pyarrow`
 - `cardsim` (git)
+- `matplotlib`, `seaborn` (EDA)
 - `pytest`, `pytest-cov`, `ruff`, `mypy`, `ipykernel`
